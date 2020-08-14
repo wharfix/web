@@ -1,0 +1,29 @@
+* {
+  font-family: 'Source Code Pro', monospace;
+  font-size: 18px;
+  margin: 0;
+  padding: 0;
+}
+
+h1 {
+    font-size: 40px;
+    font-weight: bold;
+
+}
+
+body {
+  background-color: #ffffff;
+}
+
+div.top {
+  padding: 55px 15px 15px 55px;
+}
+
+p {
+  margin-top: 20px;
+}
+
+ol, ul {
+  margin-left: 55px;
+  margin-top: 1em;
+}
