@@ -1,0 +1,44 @@
+* {
+  font-family: 'Source Code Pro', monospace;
+  font-size: 18px;
+  margin: 0;
+  padding: 0;
+}
+
+h1 {
+    font-size: 50px;
+    font-weight: bold;
+}
+
+h1, h2, h3, form {
+  margin-top: 3rem;
+}
+
+body {
+  background-color: #ffffff;
+}
+
+div.top {
+  padding: 15px 15px 15px 55px;
+}
+
+p {
+  margin-top: 1rem;
+}
+
+ol, ul {
+  margin-left: 55px;
+  margin-top: 1rem;
+}
+li {
+  margin-top: 1rem;
+}
+
+#registry-name-display {
+  margin-left: 15px;
+  font-size: 24px;
+}
+
+#registry-name-display.is-invalid {
+  color: #bd2130;
+}

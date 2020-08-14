@@ -1,0 +1,40 @@
+{% if msg.is_some() %}
+<div class="alert alert-info mb-5" role="alert">
+        <p>{{ msg.as_ref().unwrap() }}</p>
+</div>
+{%- endif %}
+
+<h1>Wharfix !</h1>
+<img src="https://github.com/identicons/app/oauth_app/1355227" width="50" height="50">
+<p>
+   Get your free expression-based, git-backed container registry today.
+</p><p>
+   Signup with Github below.
+</p>
+
+<p>
+  <a class="btn btn-social btn-github" href="/auth">
+    <span class="fa fa-github"></span> Sign in with Github
+  </a>
+</p>
+
+<h2>How do I use it?</h2>
+
+<ol>
+	<li>Have a Github repository that looks like this: <a href="https://github.com/wharfix/examples">https://github.com/wharfix/examples</a> - feel free to fork.</l1>
+	<li>Declaratively craft specs for your container images using Nix expressions.</li>
+	<li>Setup a hosted (name).wharfix.dev registry here.</li>
+	<li>Every git ref or rev in your github repo is now also an image tag.</li>
+	<li>Try a demo from the examples repository: <code>docker run -it --rm demo.wharfix.dev/sl:master</code>.</li>
+</ol>
+
+
+<h2>Disclaimer and legal stuff</h2>
+
+<p>
+  I would <em>never</em> send you Newsletters, Promotions or anything really, which is not explicitly relevant for you and the uptime and health of this service.
+<p>
+  "Docker" is a registered trademark of Docker Inc. (perhaps just don't mention docker at all)
+  Cookie consent.
+</p>
+
