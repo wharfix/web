@@ -1,5 +1,5 @@
 [package]
-name = "wharfix web"
+name = "wharfix-web"
 version = "0.1.0"
 authors = ["Johan Thomsen <jth@wharfix.dev>"]
 edition = "2018"
