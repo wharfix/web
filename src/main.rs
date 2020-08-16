@@ -15,7 +15,7 @@ use actix_web::{App, HttpServer, HttpResponse, middleware, Responder, web};
 
 use crate::actix_web::dev::Service;
 use actix_web::dev::{HttpResponseBuilder};
-use std::path::{PathBuf};
+use std::path::{Path, PathBuf};
 use std::fs;
 use std::str::FromStr;
 
@@ -72,7 +72,9 @@ fn main() {
 async fn listen(listen_address: String, listen_port: u16) -> std::io::Result<()>{
     log::info(&format!("start listening on port: {}", listen_port));
 
-    HttpServer::new(|| {
+    let webroot = PathBuf::from(env::var("WHARFIX_WEBROOT").unwrap_or("webroot".to_string()));
+
+    HttpServer::new(move || {
         App::new()
             .wrap_fn(|req, srv| {
                 log::new_request();
@@ -83,7 +85,7 @@ async fn listen(listen_address: String, listen_port: u16) -> std::io::Result<()>
             .route("/", web::get().to(frontpage))
             .route("/auth", web::get().to(github_auth))
             .route("/oauth/callback", web::get().to(github_callback))
-            .service(afs::Files::new("/static", "static"))
+            .service(afs::Files::new("/res", webroot.join("res")))
             //.route("/static/{asset}", web::get().to(manifest))
             //.route("/signup", web::post().to(signup))
     })
