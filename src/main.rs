@@ -6,12 +6,15 @@ extern crate clap;
 extern crate time;
 extern crate tokio;
 extern crate uuid;
+extern crate rand;
+
+use rand::{Rng};
 
 use actix_web::http::StatusCode;
 use std::collections::HashMap;
 use std::string::String;
 
-use actix_web::{App, HttpServer, HttpResponse, middleware, Responder, web};
+use actix_web::{App, Error, HttpServer, HttpRequest, HttpResponse, middleware, Responder, web};
 
 use crate::actix_web::dev::Service;
 use actix_web::dev::{HttpResponseBuilder};
@@ -32,11 +35,38 @@ use oauth2::{
     TokenResponse, TokenUrl,
 };
 
+
+use askama::Template; // bring trait in scope
+use serde::Serialize;
+use futures::future::{ready, Ready};
+use std::fmt::Display;
+
 use std::env;
+
+use actix_session::{CookieSession, Session};
 
 mod errors;
 mod exec;
 mod log;
+
+
+#[derive(Template)]
+#[template(path = "base.html", escape = "none")]
+struct BaseTemplate<T> where T: Template {
+  content: T
+}
+
+
+impl <T>Responder for BaseTemplate<T> where T: Template {
+    type Error = Error;
+    type Future = Ready<Result<HttpResponse, Error>>;
+
+    fn respond_to(self, _req: &HttpRequest) -> Self::Future {
+        ready(Ok(HttpResponse::Ok()
+            .content_type("text/html")
+            .body(self.render().unwrap())))
+    }
+}
 
 fn main() {
 
@@ -70,8 +100,10 @@ fn main() {
 
 #[actix_rt::main]
 async fn listen(listen_address: String, listen_port: u16) -> std::io::Result<()>{
+    use actix_session::CookieSession;
     log::info(&format!("start listening on port: {}", listen_port));
 
+    let domain = env::var("WHARFIX_DOMAIN").unwrap_or("localhost".to_string());
     let webroot = PathBuf::from(env::var("WHARFIX_WEBROOT").unwrap_or("webroot".to_string()));
 
     HttpServer::new(move || {
@@ -82,12 +114,16 @@ async fn listen(listen_address: String, listen_port: u16) -> std::io::Result<()>
                 srv.call(req)
             })
             .wrap(middleware::Compress::default())
-            .route("/", web::get().to(frontpage))
+            .wrap(CookieSession::signed(&[0; 32])
+              .domain(&domain)
+              .name("actix_session")
+              .path("/")
+              .secure(false))
+            .route("/", web::get().to(front_page))
+            .route("/manage", web::get().to(manage_page))
             .route("/auth", web::get().to(github_auth))
             .route("/oauth/callback", web::get().to(github_callback))
             .service(afs::Files::new("/res", webroot.join("res")))
-            //.route("/static/{asset}", web::get().to(manifest))
-            //.route("/signup", web::post().to(signup))
     })
         .bind(format!("{listen_address}:{listen_port}", listen_address=listen_address, listen_port=listen_port))?
         .run()
@@ -95,40 +131,38 @@ async fn listen(listen_address: String, listen_port: u16) -> std::io::Result<()>
 }
 
 
-async fn frontpage() -> impl Responder {
-    use askama::Template; // bring trait in scope
-    use actix_web::{Error, HttpRequest, HttpResponse, Responder};
-use serde::Serialize;
-use futures::future::{ready, Ready};
+async fn front_page() -> impl Responder {
 
-    #[derive(Template)] // this will generate the code...
-    #[template(path = "frontpage.html")] // using the template in this path, relative
-                                     // to the `templates` dir in the crate root
-    struct FrontPageTemplate<'a> { // the name of the struct can be anything
-        name: &'a str, // the field name should match the variable name
-                       // in your template
+    #[derive(Template)]
+    #[template(path = "frontpage.html")]
+    struct FrontPageTemplate {
     }
 
-    impl Responder for FrontPageTemplate<'_> {
-    type Error = Error;
-    type Future = Ready<Result<HttpResponse, Error>>;
-
-    fn respond_to(self, _req: &HttpRequest) -> Self::Future {
-        // Create response and set content type
-        ready(Ok(HttpResponse::Ok()
-            .content_type("text/html")
-            .body(self.render().unwrap())))
-    }
-
+    BaseTemplate { content: FrontPageTemplate {} }
 }
 
-    let hello = FrontPageTemplate { name: "world" }; // instantiate your struct
-    hello
+
+async fn manage_page(session: Session) -> impl Responder {
+
+   //match session.get::<i32>("owner-id").unwrap() {
+   //  Some(id) => ,
+
+   //}
+
+   #[derive(Template)]
+   #[template(path = "managepage.html")]
+   struct ManagePageTemplate {
+   }
+
+   BaseTemplate { content: ManagePageTemplate {} }
 }
 
-async fn github_auth() -> impl Responder {
+async fn github_auth(mut session: Session) -> impl Responder {
+
+    let state = init_db_session(&mut session);
+
     let github_client_id = ClientId::new(
-        env::var("GITHUB_CLIENT_ID").expect("Invalid client id")
+       env::var("GITHUB_CLIENT_ID").expect("Invalid client id")
     );
 
     let github_client_secret = ClientSecret::new(
@@ -141,6 +175,8 @@ async fn github_auth() -> impl Responder {
     let token_url = TokenUrl::new("https://github.com/login/oauth/access_token".to_string())
         .expect("Invalid token endpoint URL");
 
+    let domain = env::var("WHARFIX_DOMAIN").and_then(|d| Ok(format!("https://{}", &d))).unwrap_or("http://localhost".to_string());
+
     // Set up the config for the Github OAuth2 process.
     let client = BasicClient::new(
         github_client_id,
@@ -151,12 +187,12 @@ async fn github_auth() -> impl Responder {
     // This example will be running its own server at localhost:8080.
     // See below for the server implementation.
     .set_redirect_url(
-        RedirectUrl::new("https://wharfix.dev/oauth/callback".to_string()).expect("Invalid redirect URL"),
+        RedirectUrl::new(format!("{}/oauth/callback", &domain)).expect("Invalid redirect URL"),
     );
 
     // Generate the authorization URL to which we'll redirect the user.
     let (authorize_url, csrf_state) = client
-        .authorize_url(CsrfToken::new_random)
+        .authorize_url(|| state.clone())
         // This example is requesting access to the user's public repos and email.
         .add_scope(Scope::new("user:email".to_string()))
         .url();
@@ -166,18 +202,148 @@ async fn github_auth() -> impl Responder {
                        .finish()
 }
 
+#[macro_use] extern crate mysql;
+
+use mysql::{FromRowError,Pool,Row};
+use mysql::prelude::FromRow;
+use crate::mysql::prelude::Queryable;
+
+lazy_static! {
+   //let connfile = env::var("DB_CONN_FILE").expect("Invalid DB conn file")
+   static ref POOL: Pool = db_connect(PathBuf::from_str(env::var("DB_CONN_FILE").expect("Invalid DB conn file").as_str()).unwrap()); 
+}
+
+fn db_connect(creds_file: PathBuf) -> Pool {
+   Pool::new(fs::read_to_string(&creds_file).unwrap()).unwrap()
+}
+const TIME_FORMAT: &str = "%Y-%m-%d %H:%M:%S";
+
+fn init_db_session(session: &mut Session) -> CsrfToken {
+    use rand::distributions::Alphanumeric;
+    use time::Duration;
+
+    let sessionkey: String = rand::thread_rng()
+        .sample_iter(&Alphanumeric)
+        .take(64)
+        .collect();
+
+    let csrf_token = CsrfToken::new_random();
+
+    let state = csrf_token.secret(); 
+
+    session.set("key", &sessionkey);
+
+    let expiry = time::strftime(TIME_FORMAT, &(time::now_utc() + Duration::minutes(30))).unwrap();
+
+    let mut conn = POOL.get_conn().unwrap(); //or(Err(ErrorInternalServerError("data connection error"))).unwrap();
+    conn.exec_drop("INSERT INTO session (sessionkey, state, expiry) VALUES (:sessionkey, :state, :expiry)", params! { sessionkey, state, expiry }).unwrap(); 
+    //.or(Err(ErrorInternalServerError("data query error"))).unwrap();
+   
+    csrf_token
+}
+
 
 #[derive(Deserialize, Debug)]
 struct GithubCallback {
     access_token: String,
-    expires_in: u64,
-    refresh_token: String,
-    refresh_token_expires_in: u64,
-    scope: String,
     token_type: String,
 }
 
-async fn github_callback<'l>(callback: web::Path<GithubCallback>) -> impl Responder {
-    HttpResponse::Ok()
+#[derive(Deserialize, Debug)]
+struct GithubHandshake {
+    code: String,
+    state: String
+}
+
+#[derive(Deserialize, Debug)]
+struct GithubUser {
+    id: u64,
+    login: String,
+    name: String,
+    email: String
+}
+
+async fn github_callback<'l>(handshake: web::Query<GithubHandshake>, session: Session) -> impl Responder {
+    use mysql::TxOpts;
+    use reqwest::header::{ACCEPT, AUTHORIZATION, USER_AGENT};
+
+    let now = time::strftime(TIME_FORMAT, &time::now_utc()).unwrap();
+    let state = &handshake.state;
+
+    let mut conn = POOL.get_conn().unwrap();
+    let res = conn.exec_first("SELECT sessionkey FROM session WHERE state = :state AND expiry > :now", params! { state, now }).unwrap(); 
+    let (session_key) = res.unwrap();
+    
+    if session.get::<String>("key").unwrap() != session_key {
+        panic!("session keys does not match");
+    }
+
+    // https://github.com/login/oauth/access_token
+    // access_token=e72e16c7e42f292c6912e7710c838347ae178b4a&token_type=bearer
+    
+    /*
+        client_id string Required. The client ID you received from GitHub for your GitHub App.
+        client_secret string Required. The client secret you received from GitHub for your GitHub App.
+        code string Required. The code you received as a response to Step 1.
+        redirect_uri string The URL in your application where users are sent after authorization.
+        state string The unguessable random string you provided in Step 1.
+    */
+
+    let mut tx = conn.start_transaction(TxOpts::default()).unwrap();
+
+    let github_client_id = env::var("GITHUB_CLIENT_ID").expect("Invalid client id");
+    let github_client_secret = env::var("GITHUB_CLIENT_SECRET").expect("Invalid github client secret");
+
+    let params = [("client_id", github_client_id), ("client_secret", github_client_secret), ("code", handshake.code.clone()), ("state", handshake.state.clone())];
+    let client = reqwest::Client::new();
+    let res = client.post("https://github.com/login/oauth/access_token")
+        .form(&params)
+        .header(ACCEPT, "application/json")
+        .header(USER_AGENT, "Wharfix Web")
+        .send()
+        .await.unwrap();
+
+    let callback: GithubCallback = res.json().await.unwrap();
+    
+    let client = reqwest::Client::new();
+    let res = client.get("https://api.github.com/user")
+        .header(AUTHORIZATION, &format!("token {}", &callback.access_token))
+        .header(ACCEPT, "application/json")
+        .header(USER_AGENT, "Wharfix Web")
+        .send()
+        .await.unwrap();
+
+    //println!("{:?}", res.text().await.unwrap());
+
+    let user: GithubUser = res.json().await.unwrap();
+
+    let githubid = user.id;
+    let login = user.login;
+    let name = user.name;
+    let email = user.email;
+    let token = callback.access_token.clone();
+    let created = time::strftime(TIME_FORMAT, &time::now_utc()).unwrap();
+    let updated = created.clone();
+
+    let existing_user: Option<u64> = tx.exec_first("SELECT id FROM user WHERE githubid = :githubid", params! { githubid }).unwrap();
+    let user_id = match existing_user {
+        Some(id) => {
+            tx.exec_drop("UPDATE user SET login = :login, name = :name, email = :email, token = :token, updated = :updated WHERE id = :id", params! { login, name, email, token, updated, id }).unwrap();
+            id
+        },
+        None => {
+            let mut res = tx.exec_iter("INSERT INTO user (githubid, login, name, email, token, created, updated) VALUES (:githubid, :login, :name, :email, :token, :created, :updated)", params! { githubid, login, name, email, token, created, updated }).unwrap();
+            let set = res.next_set().unwrap();
+            let lol = set.unwrap();
+            lol.last_insert_id().unwrap()
+        }
+    };
+
+    tx.exec_drop("UPDATE session SET userid = :user_id WHERE sessionkey = :session_key", params! { user_id, session_key }).unwrap();
+
+    tx.commit().unwrap();
+
+    HttpResponse::Found()
+                       .header("location", "/manage")
                        .finish()
 }
