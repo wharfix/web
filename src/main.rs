@@ -144,17 +144,29 @@ async fn front_page() -> impl Responder {
 
 async fn manage_page(session: Session) -> impl Responder {
 
-   //match session.get::<i32>("owner-id").unwrap() {
-   //  Some(id) => ,
-
-   //}
-
-   #[derive(Template)]
+   #[derive(Template, Default)]
    #[template(path = "managepage.html")]
    struct ManagePageTemplate {
+     login: String,
+     name: String,
+     repourl: String,
+     enabled: bool,
+     info_type: String,
+     info_message: String
    }
 
-   BaseTemplate { content: ManagePageTemplate {} }
+   let session_key = session.get::<String>("key").unwrap().unwrap();
+
+   let mut conn = POOL.get_conn().unwrap();
+   let row: Option<(_, _, _, _)> = conn.exec_first("SELECT U.login, R.name, R.repourl, R.enabled FROM user U INNER JOIN session S ON S.userid = U.id LEFT JOIN registry R ON R.userid = S.userid AND R.destroyed IS NULL WHERE S.sessionkey = :session_key AND S.expiry > NOW()", params! { session_key }).unwrap();
+
+   let content: ManagePageTemplate = row.and_then(|(login, name, repourl, enabled): (String, Option<String>, Option<String>, Option<bool>)| Some(ManagePageTemplate {
+     login, name: name.unwrap_or_default(), repourl: repourl.unwrap_or_default(), enabled: enabled.unwrap_or_default(),
+     info_type: "info".to_string(),
+     info_message: "Registry not active.".to_string()
+   })).unwrap_or_default();
+
+   BaseTemplate { content }
 }
 
 async fn github_auth(mut session: Session) -> impl Responder {

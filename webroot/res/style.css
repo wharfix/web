@@ -27,3 +27,12 @@ ol, ul {
   margin-left: 55px;
   margin-top: 1em;
 }
+
+#registry-name-display {
+  margin-left: 15px;
+  font-size: 24px;
+}
+
+#registry-name-display.is-invalid {
+  color: #bd2130;
+}
