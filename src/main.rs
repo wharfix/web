@@ -7,6 +7,7 @@ extern crate time;
 extern crate tokio;
 extern crate uuid;
 extern crate rand;
+extern crate regex;
 
 use rand::{Rng};
 
@@ -149,8 +150,28 @@ struct RepoParams {
     registry_enabled: bool
 }
 
+const REGISTRY_NAME_PATTERN: &str = r"^[a-z0-9][a-z0-9-]{3,63}$";
+const REGISTRY_REPOURL_PATTERN: &str = r"^https://github\.com/[a-zA-Z0-9-]+/[a-zA-Z0-9-]+/?(\.git)?$";
+
 async fn repo_submit(session: Session, params: web::Form<RepoParams>) -> impl Responder {
     use mysql::TxOpts;
+    use regex::Regex;
+
+    lazy_static! {
+        static ref REGISTRY_NAME_RE: Regex = Regex::new(REGISTRY_NAME_PATTERN).unwrap();
+        static ref REGISTRY_REPOURL_RE: Regex = Regex::new(REGISTRY_REPOURL_PATTERN).unwrap();
+    }
+
+    // -- server side form validation
+    let bad_request = HttpResponse::BadRequest().finish();
+
+    if !REGISTRY_NAME_RE.is_match(&params.registry_name) {
+        return bad_request;
+    }
+    if !REGISTRY_REPOURL_RE.is_match(&params.registry_repourl) {
+        return bad_request;
+    }
+    // -------------------------------------
 
     let session_key = session.get::<String>("key").unwrap().unwrap();
 
@@ -174,15 +195,32 @@ async fn repo_submit(session: Session, params: web::Form<RepoParams>) -> impl Re
 
 async fn manage_page(session: Session) -> impl Responder {
 
-   #[derive(Template, Default)]
+   #[derive(Template)]
    #[template(path = "managepage.html")]
    struct ManagePageTemplate {
      login: String,
      name: String,
+     name_pattern: String,
      repourl: String,
+     repourl_pattern: String,
      enabled: bool,
      info_type: String,
      info_message: String,
+   }
+
+   impl Default for ManagePageTemplate {
+       fn default() -> Self {
+           Self {
+                login: String::new(),
+                name: String::new(),
+                repourl: String::new(),
+                enabled: false,
+                info_type: String::new(),
+                info_message: String::new(),
+                name_pattern: REGISTRY_NAME_PATTERN.to_string(),
+                repourl_pattern: REGISTRY_REPOURL_PATTERN.to_string(),
+           }
+       }
    }
 
    let session_key = session.get::<String>("key").unwrap().unwrap();
@@ -193,7 +231,8 @@ async fn manage_page(session: Session) -> impl Responder {
    let content: ManagePageTemplate = row.and_then(|(login, name, repourl, enabled): (String, Option<String>, Option<String>, Option<bool>)| Some(ManagePageTemplate {
      login, name: name.unwrap_or_default(), repourl: repourl.unwrap_or_default(), enabled: enabled.unwrap_or_default(),
      info_type: "info".to_string(),
-     info_message: "Registry not active.".to_string()
+     info_message: "Registry not active.".to_string(),
+     ..Default::default()
    })).unwrap_or_default();
 
    BaseTemplate { content }

@@ -3223,6 +3223,7 @@ dependencies = [
  "mysql",
  "oauth2",
  "rand 0.7.3",
+ "regex",
  "reqwest 0.10.8",
  "serde",
  "serde_derive",
