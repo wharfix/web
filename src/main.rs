@@ -121,6 +121,7 @@ async fn listen(listen_address: String, listen_port: u16) -> std::io::Result<()>
               .secure(false))
             .route("/", web::get().to(front_page))
             .route("/manage", web::get().to(manage_page))
+            .route("/manage", web::post().to(repo_submit))
             .route("/auth", web::get().to(github_auth))
             .route("/oauth/callback", web::get().to(github_callback))
             .service(afs::Files::new("/res", webroot.join("res")))
@@ -141,6 +142,35 @@ async fn front_page() -> impl Responder {
     BaseTemplate { content: FrontPageTemplate {} }
 }
 
+#[derive(Debug, Serialize, Deserialize)]
+struct RepoParams {
+    registry_name: String,
+    registry_repourl: String,
+    registry_enabled: bool
+}
+
+async fn repo_submit(session: Session, params: web::Form<RepoParams>) -> impl Responder {
+    use mysql::TxOpts;
+
+    let session_key = session.get::<String>("key").unwrap().unwrap();
+
+    let mut conn = POOL.get_conn().unwrap();
+  
+    let userid: u64 = conn.exec_first("SELECT userid FROM session WHERE sessionkey = :session_key", params! { session_key }).unwrap().unwrap();
+
+    let mut tx = conn.start_transaction(TxOpts::default()).unwrap();
+    let res = tx.exec_iter("UPDATE registry SET repourl = :repourl, enabled = :enabled, modified = NOW() WHERE name = :name AND userid = :userid AND destroyed IS NULL", params! { "name" => &params.registry_name, "repourl" => &params.registry_repourl, "enabled" => params.registry_enabled, userid });
+
+    if res.unwrap().affected_rows() == 0 {
+        tx.exec_drop("UPDATE registry SET destroyed = NOW() WHERE userid = :userid AND destroyed IS NULL", params! { userid }).unwrap();
+        tx.exec_drop("INSERT INTO registry (userid, name, repourl, enabled, created) VALUES (:userid, :name, :repourl, :enabled, NOW())", params! { userid, "name" => &params.registry_name, "repourl" => &params.registry_repourl, "enabled" => params.registry_enabled }).unwrap();
+    }
+    tx.commit().unwrap();
+
+    HttpResponse::Found()
+                       .header("location", "/manage")
+                       .finish()
+}
 
 async fn manage_page(session: Session) -> impl Responder {
 
@@ -152,7 +182,7 @@ async fn manage_page(session: Session) -> impl Responder {
      repourl: String,
      enabled: bool,
      info_type: String,
-     info_message: String
+     info_message: String,
    }
 
    let session_key = session.get::<String>("key").unwrap().unwrap();
