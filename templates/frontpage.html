@@ -1,3 +1,9 @@
+{% if msg.is_some() %}
+<div class="alert alert-info mb-5" role="alert">
+        <p>{{ msg.as_ref().unwrap() }}</p>
+</div>
+{%- endif %}
+
 <h1>Wharfix !</h1>
 <img src="https://github.com/identicons/app/oauth_app/1355227" width="50" height="50">
 <p>
@@ -16,5 +22,4 @@
     <span class="fa fa-github"></span> Sign in with Github
   </a>
 </p>
-
 

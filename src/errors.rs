@@ -47,17 +47,23 @@ pub enum WharfixWebError {
 impl Display for WharfixWebError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", match self {
-            BadRequest => "Your browser sent a malformed request to the server.",
-            SessionExpired => "Your session has expired, try logging in again.",
+            WharfixWebError::BadRequest => "Your browser sent a malformed request to the server.",
+            WharfixWebError::SessionExpired => "Your session has expired, try logging in again.",
         })
     }
 }
 
 impl std::convert::Into<actix_web::error::Error> for WharfixWebError {
     fn into(self) -> actix_web::error::Error {
+        use actix_web::dev::HttpResponseBuilder;
+        use actix_web::http::StatusCode;
+
         match self {
             WharfixWebError::BadRequest => actix_web::error::ErrorBadRequest(self),
-            WharfixWebError::SessionExpired => actix_web::error::ErrorForbidden(self)
+            WharfixWebError::SessionExpired => {
+                HttpResponseBuilder::new(StatusCode::FOUND)
+                    .header("location", format!("/?msg={msg}", msg=self.as_ref())).take().into()
+            }
         }
     }
 }

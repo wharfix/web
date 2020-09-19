@@ -157,14 +157,24 @@ async fn listen(listen_address: String, listen_port: u16) -> std::io::Result<()>
         .await
 }
 
-async fn front_page() -> WharfixWebResult {
+#[derive(Debug, Serialize, Deserialize)]
+struct FrontPageInfo {
+    msg: Option<String>
+}
+
+async fn front_page(info: web::Query<FrontPageInfo>) -> WharfixWebResult {
 
     #[derive(Template)]
     #[template(path = "frontpage.html")]
     struct FrontPageTemplate {
+        msg: Option<String>
     }
 
-    Ok(WharfixWebResponse::wrap(FrontPageTemplate {}))
+    let msg = info.msg.as_ref().and_then(|m| WharfixWebError::from_str(m).ok()).and_then(|m| Some(format!("{}", m.to_string())));
+
+    Ok(WharfixWebResponse::wrap(FrontPageTemplate {
+        msg
+    }))
 }
 
 #[derive(Debug, Serialize, Deserialize)]
