@@ -50,6 +50,22 @@ mod errors;
 mod exec;
 mod log;
 
+use crate::errors::WharfixWebError;
+
+enum WharfixWebResponse {
+    Template(Box<dyn Template>),
+    Redirect(String)
+}
+
+impl WharfixWebResponse {
+    fn wrap<T: 'static>(content: T) -> Self where T: Template {
+        WharfixWebResponse::Template(Box::new(BaseTemplate { content }))
+    }
+
+    fn redirect(target: &str) -> Self {
+        WharfixWebResponse::Redirect(target.to_string())
+    }
+}
 
 #[derive(Template)]
 #[template(path = "base.html", escape = "none")]
@@ -57,17 +73,26 @@ struct BaseTemplate<T> where T: Template {
   content: T
 }
 
+//struct WharfixWebResult(Result<WharfixWebResponse, WharfixWebError>);
+type WharfixWebResult = Result<WharfixWebResponse, WharfixWebError>;
 
-impl <T>Responder for BaseTemplate<T> where T: Template {
+impl Responder for WharfixWebResponse {
     type Error = Error;
     type Future = Ready<Result<HttpResponse, Error>>;
 
     fn respond_to(self, _req: &HttpRequest) -> Self::Future {
-        ready(Ok(HttpResponse::Ok()
-            .content_type("text/html")
-            .body(self.render().unwrap())))
+        ready(Ok(match self {
+            WharfixWebResponse::Template(t) => HttpResponse::Ok()
+                        .content_type("text/html")
+                        .body(t.render().unwrap()),
+            WharfixWebResponse::Redirect(target) => HttpResponse::Found()
+                        .header("location", target).finish(),
+            //Err(e) => HttpResponse::Found()
+            //            .header("location", format!("/?msg={}", e.as_ref()))
+        }))
     }
 }
+
 
 fn main() {
 
@@ -114,7 +139,7 @@ async fn listen(listen_address: String, listen_port: u16) -> std::io::Result<()>
                 log::data("request", &json!({ "endpoint": format!("{}", req.path()) }));
                 srv.call(req)
             })
-            .wrap(middleware::Compress::default())
+        .wrap(middleware::Compress::default())
             .wrap(CookieSession::signed(&[0; 32])
               .domain(&domain)
               .name("actix_session")
@@ -132,15 +157,14 @@ async fn listen(listen_address: String, listen_port: u16) -> std::io::Result<()>
         .await
 }
 
-
-async fn front_page() -> impl Responder {
+async fn front_page() -> WharfixWebResult {
 
     #[derive(Template)]
     #[template(path = "frontpage.html")]
     struct FrontPageTemplate {
     }
 
-    BaseTemplate { content: FrontPageTemplate {} }
+    Ok(WharfixWebResponse::wrap(FrontPageTemplate {}))
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -153,7 +177,7 @@ struct RepoParams {
 const REGISTRY_NAME_PATTERN: &str = r"^[a-z0-9][a-z0-9-]{3,63}$";
 const REGISTRY_REPOURL_PATTERN: &str = r"^https://github\.com/[a-zA-Z0-9-]+/[a-zA-Z0-9-]+/?(\.git)?$";
 
-async fn repo_submit(session: Session, params: web::Form<RepoParams>) -> impl Responder {
+async fn repo_submit(session: Session, params: web::Form<RepoParams>) -> WharfixWebResult {
     use mysql::TxOpts;
     use regex::Regex;
 
@@ -163,7 +187,7 @@ async fn repo_submit(session: Session, params: web::Form<RepoParams>) -> impl Re
     }
 
     // -- server side form validation
-    let bad_request = HttpResponse::BadRequest().finish();
+    let bad_request = Err(WharfixWebError::BadRequest);
 
     if !REGISTRY_NAME_RE.is_match(&params.registry_name) {
         return bad_request;
@@ -173,11 +197,9 @@ async fn repo_submit(session: Session, params: web::Form<RepoParams>) -> impl Re
     }
     // -------------------------------------
 
-    let session_key = session.get::<String>("key").unwrap().unwrap();
+   let (userid, session_key) = touch_session(&session)?;
 
     let mut conn = POOL.get_conn().unwrap();
-  
-    let userid: u64 = conn.exec_first("SELECT userid FROM session WHERE sessionkey = :session_key", params! { session_key }).unwrap().unwrap();
 
     let mut tx = conn.start_transaction(TxOpts::default()).unwrap();
     let res = tx.exec_iter("UPDATE registry SET repourl = :repourl, enabled = :enabled, modified = NOW() WHERE name = :name AND userid = :userid AND destroyed IS NULL", params! { "name" => &params.registry_name, "repourl" => &params.registry_repourl, "enabled" => params.registry_enabled, userid });
@@ -188,12 +210,26 @@ async fn repo_submit(session: Session, params: web::Form<RepoParams>) -> impl Re
     }
     tx.commit().unwrap();
 
-    HttpResponse::Found()
-                       .header("location", "/manage")
-                       .finish()
+    Ok(WharfixWebResponse::redirect("/manage"))
 }
 
-async fn manage_page(session: Session) -> impl Responder {
+fn touch_session(session: &Session) -> Result<(u64, String), WharfixWebError> {
+    use mysql::TxOpts;
+
+    let session_key = session.get::<String>("key").unwrap().unwrap();
+
+    let mut conn = POOL.get_conn().unwrap();
+    let mut tx = conn.start_transaction(TxOpts::default()).unwrap();
+
+    let (userid, session_key) = tx.exec_first("SELECT userid, sessionkey FROM session WHERE sessionkey = :session_key AND expiry > NOW() FOR UPDATE", params! { "session_key" => &session_key }).unwrap().ok_or(WharfixWebError::SessionExpired)?;
+    tx.exec_drop("UPDATE session SET expiry = ADDTIME(expiry, 30 * 60) WHERE sessionkey = :session_key AND userid = :userid", params! { "session_key" => &session_key, userid }).unwrap();
+
+    tx.commit().unwrap();
+
+    Ok((userid, session_key))
+}
+
+async fn manage_page(session: Session) -> WharfixWebResult {
 
    #[derive(Template)]
    #[template(path = "managepage.html")]
@@ -223,7 +259,7 @@ async fn manage_page(session: Session) -> impl Responder {
        }
    }
 
-   let session_key = session.get::<String>("key").unwrap().unwrap();
+   let (_, session_key) = touch_session(&session)?;
 
    let mut conn = POOL.get_conn().unwrap();
    let row: Option<(_, _, _, _)> = conn.exec_first("SELECT U.login, R.name, R.repourl, R.enabled FROM user U INNER JOIN session S ON S.userid = U.id LEFT JOIN registry R ON R.userid = S.userid AND R.destroyed IS NULL WHERE S.sessionkey = :session_key AND S.expiry > NOW()", params! { session_key }).unwrap();
@@ -235,7 +271,7 @@ async fn manage_page(session: Session) -> impl Responder {
      ..Default::default()
    })).unwrap_or_default();
 
-   BaseTemplate { content }
+   Ok(WharfixWebResponse::wrap(content))
 }
 
 async fn github_auth(mut session: Session) -> impl Responder {
