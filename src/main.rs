@@ -158,11 +158,11 @@ async fn listen(listen_address: String, listen_port: u16) -> std::io::Result<()>
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-struct FrontPageInfo {
+struct FeedbackInfo {
     msg: Option<String>
 }
 
-async fn front_page(info: web::Query<FrontPageInfo>) -> WharfixWebResult {
+async fn front_page(info: web::Query<FeedbackInfo>) -> WharfixWebResult {
 
     #[derive(Template)]
     #[template(path = "frontpage.html")]
@@ -181,11 +181,11 @@ async fn front_page(info: web::Query<FrontPageInfo>) -> WharfixWebResult {
 struct RepoParams {
     registry_name: String,
     registry_repourl: String,
-    registry_enabled: bool
+    registry_enabled: Option<bool>
 }
 
 const REGISTRY_NAME_PATTERN: &str = r"^[a-z0-9][a-z0-9-]{3,63}$";
-const REGISTRY_REPOURL_PATTERN: &str = r"^https://github\.com/[a-zA-Z0-9-]+/[a-zA-Z0-9-]+/?(\.git)?$";
+const REGISTRY_REPOURL_PATTERN: &str = r"^(https://)?github\.com/([a-zA-Z0-9-]{1,64})/([a-zA-Z0-9-]{1,64})/?(\.git)?$";
 
 async fn repo_submit(session: Session, params: web::Form<RepoParams>) -> WharfixWebResult {
     use mysql::TxOpts;
@@ -197,26 +197,73 @@ async fn repo_submit(session: Session, params: web::Form<RepoParams>) -> Wharfix
     }
 
     // -- server side form validation
-    let bad_request = Err(WharfixWebError::BadRequest);
+    let bad_request = |message| {
+        log::info(&format!("repo validation error: {}", &message));
+        WharfixWebError::BadRequest
+    };
 
     if !REGISTRY_NAME_RE.is_match(&params.registry_name) {
-        return bad_request;
+        return Err(bad_request("failed validation of registry name"))
     }
-    if !REGISTRY_REPOURL_RE.is_match(&params.registry_repourl) {
-        return bad_request;
-    }
+
+    let mut caps = REGISTRY_REPOURL_RE.captures(&params.registry_repourl).ok_or(bad_request("failed validation of repourl"))?;
+
+    let organization = caps.iter().nth(2).and_then(|m| Some(m.unwrap().as_str())).ok_or(bad_request("failed to capture organization from repourl"))?;
+    let repository = caps.iter().nth(3).and_then(|m| Some(m.unwrap().as_str())).ok_or(bad_request("failed to capture repository from repourl"))?;
     // -------------------------------------
 
+
+    log::info(&format!("org: {}, rep: {}", organization, repository));
+
    let (userid, session_key) = touch_session(&session)?;
+
+
+   /* Check repo */
+
+    #[derive(Debug, Serialize, Deserialize)]
+    struct GithubRepo {
+        private: bool,
+        archived: bool,
+        disabled: bool,
+        clone_url: String,
+        size: u64,
+    }
+
+    let client = reqwest::Client::new();
+    let repo: GithubRepo = client.get(&format!("https://api.github.com/repos/{organization}/{repository}", organization=organization, repository=repository))
+        .header("User-Agent", "Wharfix-Web v0.1")
+        .send()
+        .await.or(Err(WharfixWebError::RepositoryNotFound))?
+        .json()
+        .await.or(Err(WharfixWebError::RepositoryNotFound))?;
+
+    let repo_validation = {
+        if repo.private {
+           Err(WharfixWebError::RepositoryIsPrivate)
+        }
+        else if repo.archived {
+           Err(WharfixWebError::RepositoryIsArchived)
+        }
+        else if repo.disabled {
+           Err(WharfixWebError::RepositoryIsDisabled)
+        }
+        else if repo.size > 100*1024 {
+           Err(WharfixWebError::RepositoryIsTooBig)
+        }
+        else {
+           Ok(())
+        }
+    }?;
+   // ***
 
     let mut conn = POOL.get_conn().unwrap();
 
     let mut tx = conn.start_transaction(TxOpts::default()).unwrap();
-    let res = tx.exec_iter("UPDATE registry SET repourl = :repourl, enabled = :enabled, modified = NOW() WHERE name = :name AND userid = :userid AND destroyed IS NULL", params! { "name" => &params.registry_name, "repourl" => &params.registry_repourl, "enabled" => params.registry_enabled, userid });
+    let res = tx.exec_iter("UPDATE registry SET repourl = :repourl, enabled = :enabled, modified = NOW() WHERE name = :name AND userid = :userid AND destroyed IS NULL", params! { "name" => &params.registry_name, "repourl" => &repo.clone_url, "enabled" => params.registry_enabled.unwrap_or_default(), userid });
 
     if res.unwrap().affected_rows() == 0 {
         tx.exec_drop("UPDATE registry SET destroyed = NOW() WHERE userid = :userid AND destroyed IS NULL", params! { userid }).unwrap();
-        tx.exec_drop("INSERT INTO registry (userid, name, repourl, enabled, created) VALUES (:userid, :name, :repourl, :enabled, NOW())", params! { userid, "name" => &params.registry_name, "repourl" => &params.registry_repourl, "enabled" => params.registry_enabled }).unwrap();
+        tx.exec_drop("INSERT INTO registry (userid, name, repourl, enabled, created) VALUES (:userid, :name, :repourl, :enabled, NOW())", params! { userid, "name" => &params.registry_name, "repourl" => &repo.clone_url, "enabled" => params.registry_enabled.unwrap_or_default() }).unwrap();
     }
     tx.commit().unwrap();
 
@@ -239,7 +286,7 @@ fn touch_session(session: &Session) -> Result<(u64, String), WharfixWebError> {
     Ok((userid, session_key))
 }
 
-async fn manage_page(session: Session) -> WharfixWebResult {
+async fn manage_page(session: Session, info: web::Query<FeedbackInfo>) -> WharfixWebResult {
 
    #[derive(Template)]
    #[template(path = "managepage.html")]
@@ -250,6 +297,7 @@ async fn manage_page(session: Session) -> WharfixWebResult {
      repourl: String,
      repourl_pattern: String,
      enabled: bool,
+     feedback_message: Option<String>,
      info_type: String,
      info_message: String,
    }
@@ -261,6 +309,7 @@ async fn manage_page(session: Session) -> WharfixWebResult {
                 name: String::new(),
                 repourl: String::new(),
                 enabled: false,
+                feedback_message: None,
                 info_type: String::new(),
                 info_message: String::new(),
                 name_pattern: REGISTRY_NAME_PATTERN.to_string(),
@@ -274,12 +323,23 @@ async fn manage_page(session: Session) -> WharfixWebResult {
    let mut conn = POOL.get_conn().unwrap();
    let row: Option<(_, _, _, _)> = conn.exec_first("SELECT U.login, R.name, R.repourl, R.enabled FROM user U INNER JOIN session S ON S.userid = U.id LEFT JOIN registry R ON R.userid = S.userid AND R.destroyed IS NULL WHERE S.sessionkey = :session_key AND S.expiry > NOW()", params! { session_key }).unwrap();
 
-   let content: ManagePageTemplate = row.and_then(|(login, name, repourl, enabled): (String, Option<String>, Option<String>, Option<bool>)| Some(ManagePageTemplate {
-     login, name: name.unwrap_or_default(), repourl: repourl.unwrap_or_default(), enabled: enabled.unwrap_or_default(),
-     info_type: "info".to_string(),
-     info_message: "Registry not active.".to_string(),
-     ..Default::default()
-   })).unwrap_or_default();
+   let content: ManagePageTemplate = row.and_then(|(login, name, repourl, enabled): (String, Option<String>, Option<String>, Option<bool>)| {
+        let enabled = enabled.unwrap_or_default();
+        let info_type = (if enabled { "success" } else { "info" }).to_string();
+        let info_message = (if enabled { "Registry is online and serving requests." } else { "Registry is inactive." }).to_string();
+        let feedback_message = info.msg.as_ref().and_then(|msg| WharfixWebError::from_str(&msg).ok().and_then(|m| Some(m.to_string())));
+
+        Some(ManagePageTemplate {
+            login,
+            name: name.unwrap_or_default(),
+            repourl: repourl.unwrap_or_default(),
+            enabled,
+            feedback_message,
+            info_type,
+            info_message,
+            ..Default::default()
+        })
+   }).unwrap_or_default();
 
    Ok(WharfixWebResponse::wrap(content))
 }

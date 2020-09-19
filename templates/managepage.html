@@ -31,6 +31,12 @@
 	    <p><button type="button" class="btn btn-success disabled" aria-disabled disabled>Apply</button></p>
     </div>
 
+    {% if feedback_message.is_some() %}
+    <div class="alert alert-danger mt-5" role="alert">
+	    <p>{{ feedback_message.as_ref().unwrap() }}</p>
+    </div>
+    {%- endif %}
+
     <div class="alert alert-{{ info_type  }} mt-5" role="alert">
 	    <p>{{ info_message }}</p>
     </div>
