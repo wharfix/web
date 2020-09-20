@@ -457,6 +457,10 @@ async fn github_callback<'l>(handshake: web::Query<GithubHandshake>, session: Se
     let now = time::strftime(TIME_FORMAT, &time::now_utc()).unwrap();
     let state = &handshake.state;
 
+    // Remove after P1
+    let user_whitelist = env::var("USER_WHITELIST").expect("USER_WHITELIST not set in environment");
+    let user_whitelist: Vec<&str> = user_whitelist.split(',').collect();
+
     let mut conn = POOL.get_conn().unwrap();
     let res = conn.exec_first("SELECT sessionkey FROM session WHERE state = :state AND expiry > :now", params! { state, now }).unwrap(); 
     let (session_key) = res.unwrap();
@@ -511,6 +515,9 @@ async fn github_callback<'l>(handshake: web::Query<GithubHandshake>, session: Se
     let token = callback.access_token.clone();
     let created = time::strftime(TIME_FORMAT, &time::now_utc()).unwrap();
     let updated = created.clone();
+
+    // Remove after P1
+    user_whitelist.iter().find(|pred| pred.to_string() == login).expect(format!("user: {} not whitelistsed", &login).as_str());
 
     let existing_user: Option<u64> = tx.exec_first("SELECT id FROM user WHERE githubid = :githubid", params! { githubid }).unwrap();
     let user_id = match existing_user {
