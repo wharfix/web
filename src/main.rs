@@ -42,8 +42,6 @@ use serde::Serialize;
 use futures::future::{ready, Ready};
 use std::fmt::Display;
 
-use std::env;
-
 use actix_session::{CookieSession, Session};
 
 mod errors;
@@ -93,6 +91,31 @@ impl Responder for WharfixWebResponse {
     }
 }
 
+struct Config {
+    listen_address: String,
+    listen_port: u16,
+    domain: String,
+    webroot: PathBuf,
+    db_conn_string: String,
+    github_client_id: String,
+    github_client_secret: String,
+    user_whitelist: Vec<String>,
+}
+
+impl Config {
+    pub fn get() -> &'static Config {
+        unsafe {
+            CONFIG.as_ref().unwrap()
+        }
+    }
+    fn set(config: Config) {
+        unsafe {
+            CONFIG = Some(config);
+        }
+    }
+}
+
+static mut CONFIG: Option<Config> = None;
 
 fn main() {
 
@@ -100,12 +123,46 @@ fn main() {
     .arg(clap::Arg::with_name("address")
         .long("address")
         .help("Listen address to open on <port>")
+        .takes_value(true)
         .default_value("0.0.0.0")
         .required(false))
     .arg(clap::Arg::with_name("port")
         .long("port")
         .help("Listen port to open on <address>")
+        .takes_value(true)
         .default_value("8088")
+        .required(true))
+    .arg(clap::Arg::with_name("domain")
+        .long("domain")
+        .help("Domain at which the application is serving")
+        .takes_value(true)
+        .default_value("localhost")
+        .required(false))
+    .arg(clap::Arg::with_name("webroot")
+        .long("webroot")
+        .help("Path to webroot directory")
+        .takes_value(true)
+        .default_value("webroot")
+        .required(false))
+    .arg(clap::Arg::with_name("db-conn-file")
+        .long("db-conn-file")
+        .help("Path to file containing db connection details")
+        .takes_value(true)
+        .required(true))
+    .arg(clap::Arg::with_name("github-client-id")
+        .long("github-client-id")
+        .help("Github client ID")
+        .takes_value(true)
+        .required(true))
+    .arg(clap::Arg::with_name("github-client-secret-file")
+        .long("github-client-secret-file")
+        .help("Path to file containing github client secret")
+        .takes_value(true)
+        .required(true))
+    .arg(clap::Arg::with_name("user-whitelist")
+        .long("user-whitelist")
+        .help("User whitelist (comma separated)")
+        .takes_value(true)
         .required(true));
 
     if let Err(e) = || -> Result<(), MainError> {
@@ -116,7 +173,31 @@ fn main() {
             .ok_or(MainError::ArgParse("Missing cmdline arg 'port'"))?.parse()
             .or(Err(MainError::ArgParse("cmdline arg 'port' doesn't look like a port number")))?;
 
-        listen(listen_address, listen_port)
+        let domain = m.value_of("domain").unwrap().to_string();
+        let webroot = PathBuf::from(m.value_of("webroot").unwrap());
+        let db_conn_string = fs::read_to_string(&PathBuf::from(m.value_of("db-conn-file").unwrap())).expect("unable to read db-conn-file");
+
+        let github_client_id = m.value_of("github-client-id").unwrap().to_string();
+        let github_client_secret = fs::read_to_string(&PathBuf::from(m.value_of("github-client-secret-file").unwrap())).and_then(|s| Ok(s.trim().to_string())).unwrap();
+
+        let user_whitelist = m.value_of("user-whitelist").unwrap().to_string();
+        let user_whitelist: Vec<String> = user_whitelist.split(',').map(|s| s.to_string()).collect();
+
+        let config = Config{
+            listen_address,
+            listen_port,
+            domain,
+            webroot,
+            db_conn_string,
+            github_client_id,
+            github_client_secret,
+            user_whitelist,
+        };
+        unsafe {
+            Config::set(config);
+        }
+
+        listen()
             .or_else(|e| Err(MainError::ListenBind(e)))
 
     }() {
@@ -125,12 +206,16 @@ fn main() {
 }
 
 #[actix_rt::main]
-async fn listen(listen_address: String, listen_port: u16) -> std::io::Result<()>{
+async fn listen() -> std::io::Result<()>{
     use actix_session::CookieSession;
-    log::info(&format!("start listening on port: {}", listen_port));
 
-    let domain = env::var("WHARFIX_DOMAIN").unwrap_or("localhost".to_string());
-    let webroot = PathBuf::from(env::var("WHARFIX_WEBROOT").unwrap_or("webroot".to_string()));
+    let config = Config::get();
+    let listen_address = &config.listen_address;
+    let listen_port = &config.listen_port;
+    let domain = &config.domain;
+    let webroot = &config.webroot;
+
+    log::info(&format!("start listening on port: {}", listen_port));
 
     HttpServer::new(move || {
         App::new()
@@ -141,7 +226,7 @@ async fn listen(listen_address: String, listen_port: u16) -> std::io::Result<()>
             })
         .wrap(middleware::Compress::default())
             .wrap(CookieSession::signed(&[0; 32])
-              .domain(&domain)
+              .domain(domain)
               .name("actix_session")
               .path("/")
               .secure(false))
@@ -206,7 +291,7 @@ async fn repo_submit(session: Session, params: web::Form<RepoParams>) -> Wharfix
         return Err(bad_request("failed validation of registry name"))
     }
 
-    let mut caps = REGISTRY_REPOURL_RE.captures(&params.registry_repourl).ok_or(bad_request("failed validation of repourl"))?;
+    let caps = REGISTRY_REPOURL_RE.captures(&params.registry_repourl).ok_or(bad_request("failed validation of repourl"))?;
 
     let organization = caps.iter().nth(2).and_then(|m| Some(m.unwrap().as_str())).ok_or(bad_request("failed to capture organization from repourl"))?;
     let repository = caps.iter().nth(3).and_then(|m| Some(m.unwrap().as_str())).ok_or(bad_request("failed to capture repository from repourl"))?;
@@ -347,14 +432,10 @@ async fn manage_page(session: Session, info: web::Query<FeedbackInfo>) -> Wharfi
 async fn github_auth(mut session: Session) -> impl Responder {
 
     let state = init_db_session(&mut session);
+    let config = Config::get();
 
-    let github_client_id = ClientId::new(
-       env::var("GITHUB_CLIENT_ID").expect("Invalid client id")
-    );
-
-    let github_client_secret = ClientSecret::new(
-        env::var("GITHUB_CLIENT_SECRET").expect("Invalid github client secret")
-    );
+    let github_client_id = ClientId::new(config.github_client_id.clone());
+    let github_client_secret = ClientSecret::new(config.github_client_secret.clone());
 
     let auth_url = AuthUrl::new("https://github.com/login/oauth/authorize".to_string())
         .expect("Invalid authorization endpoint URL");
@@ -362,7 +443,10 @@ async fn github_auth(mut session: Session) -> impl Responder {
     let token_url = TokenUrl::new("https://github.com/login/oauth/access_token".to_string())
         .expect("Invalid token endpoint URL");
 
-    let domain = env::var("WHARFIX_DOMAIN").and_then(|d| Ok(format!("https://{}", &d))).unwrap_or("http://localhost".to_string());
+    let domain = match config.domain.as_str() {
+        "localhost" => "http://localhost".to_string(),
+        d => format!("https://{}", d)
+    };
 
     // Set up the config for the Github OAuth2 process.
     let client = BasicClient::new(
@@ -396,12 +480,12 @@ use mysql::prelude::FromRow;
 use crate::mysql::prelude::Queryable;
 
 lazy_static! {
-   //let connfile = env::var("DB_CONN_FILE").expect("Invalid DB conn file")
-   static ref POOL: Pool = db_connect(PathBuf::from_str(env::var("DB_CONN_FILE").expect("Invalid DB conn file").as_str()).unwrap()); 
+   static ref POOL: Pool = db_connect();
 }
 
-fn db_connect(creds_file: PathBuf) -> Pool {
-   Pool::new(fs::read_to_string(&creds_file).unwrap()).unwrap()
+fn db_connect() -> Pool {
+   let config = Config::get();
+   Pool::new(&config.db_conn_string).unwrap()
 }
 const TIME_FORMAT: &str = "%Y-%m-%d %H:%M:%S";
 
@@ -458,8 +542,8 @@ async fn github_callback<'l>(handshake: web::Query<GithubHandshake>, session: Se
     let state = &handshake.state;
 
     // Remove after P1
-    let user_whitelist = env::var("USER_WHITELIST").expect("USER_WHITELIST not set in environment");
-    let user_whitelist: Vec<&str> = user_whitelist.split(',').collect();
+    let config = Config::get();
+    let user_whitelist = &config.user_whitelist;
 
     let mut conn = POOL.get_conn().unwrap();
     let res = conn.exec_first("SELECT sessionkey FROM session WHERE state = :state AND expiry > :now", params! { state, now }).unwrap(); 
@@ -482,10 +566,12 @@ async fn github_callback<'l>(handshake: web::Query<GithubHandshake>, session: Se
 
     let mut tx = conn.start_transaction(TxOpts::default()).unwrap();
 
-    let github_client_id = env::var("GITHUB_CLIENT_ID").expect("Invalid client id");
-    let github_client_secret = env::var("GITHUB_CLIENT_SECRET").expect("Invalid github client secret");
+    let config = Config::get();
 
-    let params = [("client_id", github_client_id), ("client_secret", github_client_secret), ("code", handshake.code.clone()), ("state", handshake.state.clone())];
+    let github_client_id = &config.github_client_id;
+    let github_client_secret = &config.github_client_secret;
+
+    let params = [("client_id", github_client_id), ("client_secret", github_client_secret), ("code", &handshake.code), ("state", &handshake.state)];
     let client = reqwest::Client::new();
     let res = client.post("https://github.com/login/oauth/access_token")
         .form(&params)
