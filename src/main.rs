@@ -455,10 +455,8 @@ async fn github_auth(mut session: Session) -> impl Responder {
         auth_url,
         Some(token_url),
     )
-    // This example will be running its own server at localhost:8080.
-    // See below for the server implementation.
     .set_redirect_url(
-        RedirectUrl::new(format!("{}/oauth/callback", &domain)).expect("Invalid redirect URL"),
+        RedirectUrl::new(format!("{}", &domain)).expect("Invalid redirect URL"),
     );
 
     // Generate the authorization URL to which we'll redirect the user.
