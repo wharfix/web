@@ -2,32 +2,30 @@
   description = "wharfix-web";
 
   inputs = {
-    cargo2nix.url = "github:cargo2nix/cargo2nix";
-    cargo2nix.inputs.nixpkgs.follows = "nixpkgs";
-    nixpkgs.url = "github:NixOS/nixpkgs/nixos-22.05";
+    crane.url = "github:ipetkov/crane";
+    crane.inputs.nixpkgs.follows = "nixpkgs";
+    nixpkgs.url = "github:NixOS/nixpkgs/nixos-22.11";
   };
 
-  outputs = { self, cargo2nix, nixpkgs }:
+  outputs = { self, crane, nixpkgs }:
   let
     pname = "wharfix-web";
     system = "x86_64-linux";
     pkgs = import nixpkgs {
       inherit system;
-      overlays = [ self.overlay cargo2nix.overlays.default ];
+      overlays = [ self.overlay crane-overlay ];
     };
     lib = nixpkgs.lib;
-
-    outputPackages = {
-      "${pname}" = ["default"];
+    crane-overlay = final: prev: {
+      # crane's lib is not exposed as an overlay in its flake (should be added
+      # upstream ideally) so this interface might be brittle, but avoids
+      # accidentally passing a detached nixpkgs from its flake (or its follows)
+      # on to consumers.
+      craneLib = crane.mkLib prev;
     };
 
-    askama.workspacePatch = pks: name: pks.rustBuilder.rustLib.makeOverride {
-      inherit name;
-      overrideAttrs = oa: {
-        postPatch = (oa.postPatch or "") + ''
-          substituteInPlace ${name}/Cargo.toml --replace 'workspace = ".."' ""
-        '';
-      };
+    outputPackages = {
+      "${pname}" = [];
     };
   in {
     packages.${system} = lib.mapAttrs (n: _: pkgs.${n}) outputPackages;
@@ -36,24 +34,29 @@
     overlay = final: prev:
     let
       cratePackage = name: features:
-        (final.rustBuilder.makePackageSet {
-          rustVersion = final.rustc.version;
-          packageFun = import ./Cargo.nix;
-          rootFeatures = map (f: "${pname}/${f}") features;
-          packageOverrides = pks: (let pf = askama.workspacePatch pks; in pks.rustBuilder.overrides.all ++ (map pf [
-            "askama"
-            "askama_actix"
-            "askama_derive"
-            "askama_escape"
-          ]));
-        }).workspace.${pname} {};
+        (final.craneLib.buildPackage {
+          src = with final; lib.cleanSourceWith {
+            src = ./.;
+            filter = path: type:
+            let
+              templates = builtins.match ".+\.html" path != null;
+            in
+              (craneLib.filterCargoSources path type) || templates;
+          };
+          nativeBuildInputs = with final; [
+            pkg-config
+          ];
+          buildInputs = with final; [
+            openssl
+          ];
+          cargoExtraArgs = final.lib.concatMapStringsSep " " (f: "--features=${f}") features;
+        });
     in
       lib.mapAttrs cratePackage outputPackages;
 
     devShell.${system} = with pkgs; mkShell {
       buildInputs = [
         cargo
-        cargo2nix.packages.${system}.cargo2nix
         nix
         openssl.dev
         pkgconfig

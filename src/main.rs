@@ -605,8 +605,7 @@ async fn github_callback<'l>(handshake: web::Query<GithubHandshake>, session: Se
         None => {
             let mut res = tx.exec_iter("INSERT INTO user (githubid, login, name, email, token, created, updated) VALUES (:githubid, :login, :name, :email, :token, :created, :updated)", params! { githubid, login, name, email, token, created, updated }).unwrap();
             let set = res.next_set().unwrap();
-            let lol = set.unwrap();
-            lol.last_insert_id().unwrap()
+            set.last_insert_id().unwrap()
         }
     };
 
