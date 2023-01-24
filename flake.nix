@@ -39,9 +39,10 @@
             src = ./.;
             filter = path: type:
             let
-              templates = builtins.match ".+\.html" path != null;
+              templates = lib.hasInfix "/templates/" path;
+              webroot = lib.hasInfix "/webroot/" path;
             in
-              (craneLib.filterCargoSources path type) || templates;
+              (craneLib.filterCargoSources path type) || webroot || templates;
           };
           nativeBuildInputs = with final; [
             pkg-config
